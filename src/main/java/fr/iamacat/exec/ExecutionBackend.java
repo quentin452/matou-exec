@@ -1,0 +1,29 @@
+package fr.iamacat.exec;
+
+/**
+ * Runs {@link Job}s (hub doc 28). The seam whose implementation is swapped to move a system between serial and
+ * parallel execution WITHOUT rewriting the system: {@link SerialBackend} runs {@code compute} inline on the caller's
+ * thread; {@link WorkerPoolBackend} runs it on a worker pool; a future native/GPU backend would offload it further.
+ * All of them defer {@link Job#apply} to {@link #drainAndApply(long)}, which the game calls once per tick on the tick
+ * thread — so the apply timing (and thus the observable behaviour) is identical across backends.
+ */
+public interface ExecutionBackend {
+
+    /** Submit a job over an immutable snapshot. The backend decides when/where {@code compute} runs. */
+    <S, R> Handle<R> submit(Job<S, R> job, S snapshot);
+
+    /**
+     * Apply the results of finished jobs on the CALLING thread (the tick thread), skipping cancelled/invalid ones,
+     * bounded by {@code budgetNanos} so a burst of completions never spikes a single tick. Left-over results are
+     * applied on the next call.
+     */
+    void drainAndApply(long budgetNanos);
+
+    /** Apply everything ready, unbounded. */
+    default void drainAndApply() {
+        drainAndApply(Long.MAX_VALUE);
+    }
+
+    /** Stop workers and drop any in-flight/pending work. */
+    void shutdown();
+}

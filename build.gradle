@@ -1,0 +1,44 @@
+// matou-exec — the pure, dependency-free execution seam (hub doc 28) extracted so BOTH matoulib
+// and OptimizationsAndTweaks can depend on it without OaT taking a hard dependency on matoulib.
+// Zero Minecraft / zero third-party imports on purpose: it compiles to Java 8 bytecode and both
+// mods shade it into their own jar (shadowImplementation), so players never need a separate lib.
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = 'fr.iamacat'
+version = '1.0.0'
+
+java {
+    withSourcesJar()
+}
+
+// 1.7.10 runs on Java 8 — emit Java 8 bytecode via --release 8 on the (newer) host JDK, so no
+// separate JDK 8 install is needed. Tests still run on the host JVM.
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    if (JavaVersion.current().isJava9Compatible()) {
+        options.release.set(8)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+test {
+    useJUnit()
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+        }
+    }
+}
