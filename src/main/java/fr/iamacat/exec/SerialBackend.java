@@ -18,6 +18,7 @@ public final class SerialBackend implements ExecutionBackend {
         ExecTask<S, R> task = new ExecTask<>(job, snapshot);
         task.compute();
         ready.add(task);
+        task.markDone(); // done after enqueue, mirroring the parallel backend's contract (ExecTask.markDone)
         return task;
     }
 

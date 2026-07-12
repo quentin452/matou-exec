@@ -49,6 +49,7 @@ public final class WorkerPoolBackend implements ExecutionBackend {
             // Backpressure: run inline rather than unbounded-queue the work.
             task.compute();
             ready.add(task);
+            task.markDone(); // done AFTER enqueue — see ExecTask.markDone (BUG-052-B race)
             return task;
         }
         inFlight.incrementAndGet();
@@ -56,6 +57,9 @@ public final class WorkerPoolBackend implements ExecutionBackend {
             try {
                 task.compute();
                 ready.add(task);
+                // markDone MUST follow ready.add: a waiter that sees isDone() then drains would otherwise poll an
+                // empty queue and apply nothing (the intermittent "0 loaded, 0 errors" of BUG-052-B).
+                task.markDone();
             } finally {
                 inFlight.decrementAndGet();
             }

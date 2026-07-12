@@ -19,11 +19,21 @@ final class ExecTask<S, R> implements Handle<R> {
         this.snapshot = snapshot;
     }
 
-    /** Run the pure computation (a cancelled task is skipped but still marked done). */
+    /** Run the pure computation (a cancelled task is skipped). Does NOT mark done — see {@link #markDone()}. */
     void compute() {
         if (!cancelled) {
             result = job.compute(snapshot);
         }
+    }
+
+    /**
+     * Mark the task done — its result is computed AND it has been enqueued for drain. A backend MUST call this AFTER
+     * adding the task to its ready queue, never inside {@link #compute()}: {@code done} is the signal a waiter polls
+     * ({@code while (!isDone())}) before draining, so if it flipped true before the task reached the ready queue, the
+     * drain would find an empty queue and silently apply nothing (the WorkerPool submit→compute→add race that made
+     * one-shot DSL loads intermittently return "0 loaded, 0 errors" — hub BUG-052-B).
+     */
+    void markDone() {
         done = true;
     }
 
