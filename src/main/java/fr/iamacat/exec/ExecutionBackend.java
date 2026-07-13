@@ -26,4 +26,26 @@ public interface ExecutionBackend {
 
     /** Stop workers and drop any in-flight/pending work. */
     void shutdown();
+
+    // --- Live gauges for the /execstats devtools readout (doc 28). Defaults suit a thread-less backend. ---
+
+    /** Backend kind: {@code "serial"} or {@code "worker"}. */
+    default String kind() {
+        return "serial";
+    }
+
+    /** Worker-thread count (0 = runs inline on the tick thread). */
+    default int workers() {
+        return 0;
+    }
+
+    /** Jobs submitted-but-not-yet-computed on a worker right now (0 for an inline backend). */
+    default int inFlight() {
+        return 0;
+    }
+
+    /** Computed results waiting to be applied on the next {@code drainAndApply} (drain backlog). */
+    default int pendingApply() {
+        return 0;
+    }
 }

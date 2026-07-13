@@ -10,6 +10,7 @@ final class ExecTask<S, R> implements Handle<R> {
 
     private final Job<S, R> job;
     private final S snapshot;
+    private final String type;
     private volatile R result;
     private volatile boolean done;
     private volatile boolean cancelled;
@@ -17,12 +18,21 @@ final class ExecTask<S, R> implements Handle<R> {
     ExecTask(Job<S, R> job, S snapshot) {
         this.job = job;
         this.snapshot = snapshot;
+        this.type = job.getClass()
+            .getSimpleName();
+        ExecStats.submit(type);
     }
 
-    /** Run the pure computation (a cancelled task is skipped). Does NOT mark done — see {@link #markDone()}. */
-    void compute() {
+    /**
+     * Run the pure computation (a cancelled task is skipped), timing it for {@link ExecStats}. {@code inline} = the
+     * backend ran it on the CALLING (tick) thread (serial backend, or worker-pool backpressure) rather than a worker —
+     * high inline counts mean parallelism is being lost.
+     */
+    void compute(boolean inline) {
         if (!cancelled) {
+            long t0 = System.nanoTime();
             result = job.compute(snapshot);
+            ExecStats.compute(type, System.nanoTime() - t0, inline);
         }
     }
 
@@ -37,10 +47,12 @@ final class ExecTask<S, R> implements Handle<R> {
         done = true;
     }
 
-    /** On the tick thread: apply unless the task was cancelled or its context is gone. */
+    /** On the tick thread: apply unless the task was cancelled or its context is gone (timed for {@link ExecStats}). */
     void applyIfValid() {
         if (!cancelled && job.isValid()) {
+            long t0 = System.nanoTime();
             job.apply(result);
+            ExecStats.apply(type, System.nanoTime() - t0);
         }
     }
 

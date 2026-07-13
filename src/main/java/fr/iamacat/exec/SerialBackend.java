@@ -16,10 +16,15 @@ public final class SerialBackend implements ExecutionBackend {
     @Override
     public <S, R> Handle<R> submit(Job<S, R> job, S snapshot) {
         ExecTask<S, R> task = new ExecTask<>(job, snapshot);
-        task.compute();
+        task.compute(true); // inline on the caller (tick) thread
         ready.add(task);
         task.markDone(); // done after enqueue, mirroring the parallel backend's contract (ExecTask.markDone)
         return task;
+    }
+
+    @Override
+    public int pendingApply() {
+        return ready.size();
     }
 
     @Override

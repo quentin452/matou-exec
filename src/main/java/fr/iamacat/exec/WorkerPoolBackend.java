@@ -22,6 +22,7 @@ public final class WorkerPoolBackend implements ExecutionBackend {
     private final Queue<ExecTask<?, ?>> ready = new ConcurrentLinkedQueue<>();
     private final AtomicInteger inFlight = new AtomicInteger();
     private final int maxInFlight;
+    private final int workers;
 
     /** Default: (cores - 2) workers (min 1), 256 in-flight cap — mirrors the workflow concurrency heuristic. */
     public WorkerPoolBackend() {
@@ -35,6 +36,7 @@ public final class WorkerPoolBackend implements ExecutionBackend {
 
     public WorkerPoolBackend(int threads, int maxInFlight) {
         this.maxInFlight = maxInFlight;
+        this.workers = Math.max(1, threads);
         this.pool = Executors.newFixedThreadPool(Math.max(1, threads), r -> {
             Thread t = new Thread(r, "matoulib-exec");
             t.setDaemon(true);
@@ -46,8 +48,8 @@ public final class WorkerPoolBackend implements ExecutionBackend {
     public <S, R> Handle<R> submit(Job<S, R> job, S snapshot) {
         ExecTask<S, R> task = new ExecTask<>(job, snapshot);
         if (inFlight.get() >= maxInFlight) {
-            // Backpressure: run inline rather than unbounded-queue the work.
-            task.compute();
+            // Backpressure: run inline rather than unbounded-queue the work (counts as inline in ExecStats).
+            task.compute(true);
             ready.add(task);
             task.markDone(); // done AFTER enqueue — see ExecTask.markDone (BUG-052-B race)
             return task;
@@ -55,7 +57,7 @@ public final class WorkerPoolBackend implements ExecutionBackend {
         inFlight.incrementAndGet();
         pool.execute(() -> {
             try {
-                task.compute();
+                task.compute(false); // on a worker thread
                 ready.add(task);
                 // markDone MUST follow ready.add: a waiter that sees isDone() then drains would otherwise poll an
                 // empty queue and apply nothing (the intermittent "0 loaded, 0 errors" of BUG-052-B).
@@ -83,5 +85,25 @@ public final class WorkerPoolBackend implements ExecutionBackend {
     public void shutdown() {
         pool.shutdownNow();
         ready.clear();
+    }
+
+    @Override
+    public String kind() {
+        return "worker";
+    }
+
+    @Override
+    public int workers() {
+        return workers;
+    }
+
+    @Override
+    public int inFlight() {
+        return inFlight.get();
+    }
+
+    @Override
+    public int pendingApply() {
+        return ready.size();
     }
 }
