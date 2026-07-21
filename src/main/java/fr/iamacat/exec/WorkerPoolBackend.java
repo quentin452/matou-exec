@@ -5,6 +5,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Parallel {@link ExecutionBackend} (hub doc 28): {@code compute} runs on a bounded worker pool, finished results land
@@ -13,14 +14,23 @@ import java.util.concurrent.atomic.AtomicInteger;
  * transparency guarantee, asserted by the {@code serial == parallel} test.
  *
  * <p>
- * <b>Backpressure</b>: once {@code maxInFlight} jobs are outstanding, further submits degrade to inline execution
- * (like the serial backend) instead of growing an unbounded queue — the system stays responsive under a submit burst.
+ * <b>Backpressure = DEFER, never inline.</b> Once {@code maxInFlight} jobs are outstanding the backend is
+ * oversubscribed, but an over-cap submit still runs on a WORKER — it is <b>never</b> executed inline on the calling
+ * thread. Inlining under backpressure was the original design (mirror the serial backend to avoid an unbounded queue),
+ * but when the caller is the client RENDER thread, inlining a heavy job (measured: a 590K-cell light flood during
+ * chunk-gen flooding) froze the frame to ~3fps — heavy compute on the render/tick thread is the one thing this seam
+ * must never do (hub QUEUE #2, jstack-confirmed 2026-07-21; invisible to CPU profilers = safepoint bias on counted
+ * loops). So the cap is now a SOFT gate: it drives {@link #capacity()} and a throttled oversubscription warning, and
+ * fire-and-forget callers should check {@code inFlight() < capacity()} and skip/retry rather than pile on. Block-waiting
+ * callers (submit one job, spin on {@link Handle#isDone()}) are naturally bounded and simply wait for a worker.
  */
 public final class WorkerPoolBackend implements ExecutionBackend {
 
     private final ExecutorService pool;
     private final Queue<ExecTask<?, ?>> ready = new ConcurrentLinkedQueue<>();
     private final AtomicInteger inFlight = new AtomicInteger();
+    private final AtomicLong deferred = new AtomicLong();
+    private volatile long lastWarnNanos;
     private final int maxInFlight;
     private final int workers;
 
@@ -47,17 +57,17 @@ public final class WorkerPoolBackend implements ExecutionBackend {
     @Override
     public <S, R> Handle<R> submit(Job<S, R> job, S snapshot) {
         ExecTask<S, R> task = new ExecTask<>(job, snapshot);
-        if (inFlight.get() >= maxInFlight) {
-            // Backpressure: run inline rather than unbounded-queue the work (counts as inline in ExecStats).
-            task.compute(true);
-            ready.add(task);
-            task.markDone(); // done AFTER enqueue — see ExecTask.markDone (BUG-052-B race)
-            return task;
+        int now = inFlight.incrementAndGet();
+        if (now > maxInFlight) {
+            // OVER SOFT CAP: DEFER, do NOT inline. The job still runs on a worker (below), NEVER on the calling
+            // thread — inlining a heavy job on the render/tick thread was the ~3fps freeze (hub QUEUE #2). The
+            // pool's queue absorbs the overflow; a throttled warning surfaces persistent oversubscription and
+            // fire-and-forget callers should gate on inFlight() < capacity() to keep the backlog bounded.
+            warnDeferred(now);
         }
-        inFlight.incrementAndGet();
         pool.execute(() -> {
             try {
-                task.compute(false); // on a worker thread
+                task.compute(false); // ALWAYS on a worker thread — never inline on the caller, even under backpressure
                 ready.add(task);
                 // markDone MUST follow ready.add: a waiter that sees isDone() then drains would otherwise poll an
                 // empty queue and apply nothing (the intermittent "0 loaded, 0 errors" of BUG-052-B).
@@ -67,6 +77,19 @@ public final class WorkerPoolBackend implements ExecutionBackend {
             }
         });
         return task;
+    }
+
+    /** Throttled (first hit, then at most ~1/s) stderr warning that the backend is oversubscribed. */
+    private void warnDeferred(int inFlightNow) {
+        long n = deferred.incrementAndGet();
+        long t = System.nanoTime();
+        long last = lastWarnNanos;
+        if (n == 1L || t - last > 1_000_000_000L) {
+            lastWarnNanos = t;
+            System.err.println(
+                "[matou-exec] WorkerPoolBackend oversubscribed (" + inFlightNow + " > cap " + maxInFlight
+                    + ", deferred=" + n + "): deferring to workers, NOT inlining on the caller.");
+        }
     }
 
     @Override
@@ -100,6 +123,11 @@ public final class WorkerPoolBackend implements ExecutionBackend {
     @Override
     public int inFlight() {
         return inFlight.get();
+    }
+
+    @Override
+    public int capacity() {
+        return maxInFlight;
     }
 
     @Override

@@ -25,8 +25,9 @@ final class ExecTask<S, R> implements Handle<R> {
 
     /**
      * Run the pure computation (a cancelled task is skipped), timing it for {@link ExecStats}. {@code inline} = the
-     * backend ran it on the CALLING (tick) thread (serial backend, or worker-pool backpressure) rather than a worker —
-     * high inline counts mean parallelism is being lost.
+     * backend ran it on the CALLING (tick) thread (the serial backend) rather than a worker — high inline counts mean
+     * parallelism is being lost. The worker pool never inlines, even under backpressure (it defers to a worker), so its
+     * inline count stays 0.
      */
     void compute(boolean inline) {
         if (!cancelled) {

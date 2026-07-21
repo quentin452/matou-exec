@@ -48,4 +48,16 @@ public interface ExecutionBackend {
     default int pendingApply() {
         return 0;
     }
+
+    /**
+     * Soft in-flight capacity (the point past which the backend is oversubscribed). A <b>fire-and-forget</b> caller —
+     * one that submits without block-waiting on the handle, e.g. the client render thread scheduling mesh/light jobs —
+     * should gate on {@code inFlight() < capacity()} and SKIP/retry-next-tick rather than pile more work on a saturated
+     * backend. Crossing the cap never makes the backend run a job inline on the caller (that was the render-thread
+     * freeze, hub QUEUE #2); it only defers to the pool. {@link Integer#MAX_VALUE} = no cap (an inline/serial backend
+     * runs on the caller by design, so there is nothing to gate).
+     */
+    default int capacity() {
+        return Integer.MAX_VALUE;
+    }
 }

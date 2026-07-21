@@ -115,8 +115,54 @@ public class ExecutionBackendTest {
 
     @Test
     public void backpressureLosesNoWork() {
-        // maxInFlight=1 forces most submits to degrade to inline; every job must still be applied exactly once.
+        // maxInFlight=1 forces most submits over the soft cap → deferred to workers (never inlined); every job must
+        // still be computed and applied exactly once.
         List<Integer> sink = runAll(new WorkerPoolBackend(2, 1), 300);
         assertEquals("every job applied despite backpressure", 300, sink.size());
+    }
+
+    /** A named (non-anonymous) job so its ExecStats type key is stable ("SquareJob"), for the inline-count assertion. */
+    static final class SquareJob implements Job<Integer, Integer> {
+
+        private final List<Integer> sink;
+
+        SquareJob(List<Integer> sink) {
+            this.sink = sink;
+        }
+
+        @Override
+        public Integer compute(Integer x) {
+            return x * x;
+        }
+
+        @Override
+        public void apply(Integer r) {
+            sink.add(r);
+        }
+    }
+
+    /**
+     * The core guarantee of the backpressure fix (hub QUEUE #2): over the soft cap the worker pool DEFERS to a worker,
+     * it NEVER runs the job inline on the calling thread (which, on the render thread, was the ~3fps freeze). So the
+     * pool's inline-compute count stays 0 even when every submit is oversubscribed, while no work is lost.
+     */
+    @Test
+    public void backpressureDefersNeverInlinesOnCaller() {
+        ExecStats.reset();
+        List<Integer> sink = Collections.synchronizedList(new ArrayList<Integer>());
+        List<Handle<Integer>> handles = new ArrayList<>();
+        WorkerPoolBackend backend = new WorkerPoolBackend(2, 1); // cap 1 → nearly every submit is over the soft cap
+        assertEquals("capacity() reflects the soft cap", 1, backend.capacity());
+        for (int i = 0; i < 300; i++) {
+            handles.add(backend.submit(new SquareJob(sink), i));
+        }
+        awaitDone(handles);
+        backend.drainAndApply();
+        backend.shutdown();
+        assertEquals("every deferred job still applied exactly once", 300, sink.size());
+        long[] row = ExecStats.snapshot()
+            .get("SquareJob");
+        // ExecStats layout: [submitted, computed, applied, computeNanos, applyNanos, inlineComputed].
+        assertEquals("deferred jobs must run on a worker, never inline on the caller", 0L, row[5]);
     }
 }
