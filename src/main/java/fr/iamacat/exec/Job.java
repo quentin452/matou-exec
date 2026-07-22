@@ -35,4 +35,17 @@ public interface Job<S, R> {
     default boolean isValid() {
         return true;
     }
+
+    /**
+     * OPTIONAL identity for redundancy profiling — the "same work" key. Default {@code null} = no identity (a job type
+     * that opts out of dedup tracking). When non-null, {@link ExecProfiler} counts a submit as REDUNDANT if an
+     * {@code equals}-equal key for the same job type is already in flight (submitted but not yet drained) — i.e. the
+     * engine is recomputing work it has not even finished the first time. This is a pure DIAGNOSTIC signal (it never
+     * dedups or drops work); override it cheaply (e.g. a chunk coord, an entity id) on hot flooding job types to
+     * surface algorithmic waste, leave it {@code null} otherwise. MUST be cheap, immutable, and correctly implement
+     * {@code equals}/{@code hashCode}. Read only when {@link ExecProfiler#isEnabled()}.
+     */
+    default Object dedupKey() {
+        return null;
+    }
 }

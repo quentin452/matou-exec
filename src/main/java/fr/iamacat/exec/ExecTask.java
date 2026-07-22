@@ -21,6 +21,7 @@ final class ExecTask<S, R> implements Handle<R> {
         this.type = job.getClass()
             .getSimpleName();
         ExecStats.submit(type);
+        ExecProfiler.submit(type, job);
     }
 
     /**
@@ -33,7 +34,9 @@ final class ExecTask<S, R> implements Handle<R> {
         if (!cancelled) {
             long t0 = System.nanoTime();
             result = job.compute(snapshot);
-            ExecStats.compute(type, System.nanoTime() - t0, inline);
+            long dt = System.nanoTime() - t0;
+            ExecStats.compute(type, dt, inline);
+            ExecProfiler.compute(type, dt);
         }
     }
 
@@ -55,6 +58,9 @@ final class ExecTask<S, R> implements Handle<R> {
             job.apply(result);
             ExecStats.apply(type, System.nanoTime() - t0);
         }
+        // Retire once per submitted task at drain (regardless of valid/cancelled) — releases the in-flight dedup key
+        // and advances the backlog proxy. No-op unless the profiler is enabled.
+        ExecProfiler.retire(type, job);
     }
 
     @Override
